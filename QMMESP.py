@@ -36,8 +36,15 @@ def main():
                       help="Number of CPU cores assigned to the QM calculation")
     parser.add_argument("--orcadir", default=None,
                       help="Specify Orca installation directory")
+    parser.add_argument('--multiwfnpath', type=str,
+                    default=os.getenv('Multiwfnpath'),
+                    help='Path to software (defaults to $Multiwfnpath)')
 
     args = parser.parse_args()
+
+    if args.multiwfnpath is None:
+        parser.error("No path provided via --path or $Multiwfnpath environment variable.")
+
 
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
@@ -93,11 +100,11 @@ def main():
     print(f"QM/MM Energy: {result.energy} Hartree")
     
     # Extract RESP charges
-    extract_resp_charges("./", args.output, qm_atoms, system)
+    extract_resp_charges("./", args.output, qm_atoms, system, args)
     
     print("QM/MM RESP calculation completed successfully!")
 
-def extract_resp_charges(orca_dir, output_dir, qm_atoms, system):
+def extract_resp_charges(orca_dir, output_dir, qm_atoms, system, args):
     """Extract RESP charges from ORCA calculation"""
     print("Extracting RESP charges...")
     
@@ -118,9 +125,8 @@ def extract_resp_charges(orca_dir, output_dir, qm_atoms, system):
 18   ! RESP fitting
 1    ! Start the fitting
 y    ! Yes, continue
-2    ! Use medium quality grid
-1    ! Use restraint, RESP fitting
-0    ! Save results and exit
+0    ! Return
+0    ! Return
 q    ! Quit
 """
     
@@ -129,9 +135,10 @@ q    ! Quit
         f.write(multiwfn_input)
     
     multiwfn_log = os.path.join(output_dir, "multiwfn.log")
+    print(f"{args.multiwfnpath}/Multiwfn_noGUI {molden_file} < {multiwfn_input_file} > {multiwfn_log}")
     try:
         subprocess.run(
-            f"Multiwfn {molden_file} < {multiwfn_input_file} > {multiwfn_log}",
+            f"{args.multiwfnpath}/Multiwfn_noGUI {molden_file} < {multiwfn_input_file} > {multiwfn_log}",
             shell=True, check=True
         )
     except subprocess.CalledProcessError as e:
