@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--pdb", required=True, help="Input PDB file")
     parser.add_argument("--prmtop", required=True, help="Input prmtop file")
     parser.add_argument("--inpcrd", required=True, help="Input inpcrd file")
+    parser.add_argument("--prepi", help="Original prepi files")
     parser.add_argument("--resid", required=True, type=int, 
                       help="Residue ID of substrate")
     parser.add_argument("--charge", type=int, default=0, 
@@ -148,7 +149,7 @@ q    ! Quit
     
     # Parse and save RESP charges
     resp_charges = parse_multiwfn_resp("esp.chg")
-    save_charges(resp_charges, qm_atoms, system, output_dir, top)
+    save_charges(resp_charges, qm_atoms, system, output_dir, top, args)
 
 def parse_multiwfn_resp(multiwfn_chg):
     """Parse RESP charges from Multiwfn output"""
@@ -162,32 +163,98 @@ def parse_multiwfn_resp(multiwfn_chg):
                 print(f"No charges found in {multiwfn_chg}")
     
     return resp_charges
+def update_prepi_charges(original_prepi_path, charge_data, output_prepi_path):
+    """
+    Update charges in an AMBER prepi file.
+    
+    Parameters:
+        original_prepi_path: Path to the original prepi file
+        charge_data: Dictionary mapping atom names to new charges
+                    OR list of (atom_name, charge) tuples
+        output_prepi_path: Path for the new prepi file
+    """
+    with open(original_prepi_path, 'r') as f:
+        lines = f.readlines()
+    
+    new_lines = []
+    atom_section = False
+    
+    for line in lines:
+        if not line.strip():
+            new_lines.append(line)
+            continue
+            
+        # Check if we're in the atom section
+        if line.strip().startswith('DUMM') or (len(line.split()) > 3 and line.split()[1] in ['DUMM', 'C', 'H', 'O', 'N', 'S', 'P', 'F', 'Cl', 'Br', 'I']):
+            atom_section = True
+            
+        if atom_section and not line.strip().startswith(('LOOP', 'IMPROPER', 'DONE')):
+            parts = line.split()
+            if len(parts) >= 3:
+                atom_idx = int(parts[0])
+                atom_name = parts[1]
+                
+                # Check if this is an actual atom line (not DUMM)
+                if atom_idx >= 4:  # Real atoms start after DUMM atoms
+                    # Find the atom in charge_data
+                    new_charge = None
+                    
+                    if isinstance(charge_data, dict):
+                        new_charge = charge_data.get(atom_name)
+                    elif isinstance(charge_data, list):
+                        for name, charge in charge_data:
+                            if name == atom_name:
+                                new_charge = charge
+                                break
+                    
+                    if new_charge is not None:
+                        # Replace the last field (charge)
+                        parts[-1] = f"{new_charge:.6f}"
+                        
+                        # Reconstruct the line with proper spacing
+                        # Keep original format using fixed width fields
+                        new_line = f"{atom_idx:4d}  {atom_name:<6s}{parts[2]:<6s}{parts[3]:1s}"
+                        new_line += f"{int(parts[4]):5d}{int(parts[5]):4d}{int(parts[6]):4d}"
+                        new_line += f"{float(parts[7]):10.3f}{float(parts[8]):10.3f}{float(parts[9]):10.3f}{float(parts[-1]):10.6f}\n"
+                        
+                        new_lines.append(new_line)
+                        continue
+            
+            new_lines.append(line)
+        elif line.strip() in ('LOOP', 'IMPROPER', 'DONE'):
+            atom_section = False
+            new_lines.append(line)
+        else:
+            new_lines.append(line)
+    
+    with open(output_prepi_path, 'w') as f:
+        f.writelines(new_lines)
+    
+    print(f"Updated prepi file created at {output_prepi_path}")
 
-def save_charges(charges, qm_atoms, system, output_dir, top):
+
+def save_charges(charges, qm_atoms, system, output_dir, top, args):
     """Save charges to output files"""
-    
-    # mol2 format
-    resname = top.atom(qm_atoms[0]).residue.name
-    amber_file = os.path.join(output_dir, f"{resname}_resp.mol2")
-    with open(amber_file, "w") as f:
-        f.write("@<TRIPOS>MOLECULE\n")
-        f.write(f"{resname}\n")
-        f.write(f"{len(qm_atoms)} 0 0 0 0\n")
-        f.write("SMALL\n")
-        f.write("USER_CHARGES\n\n")
-        
-        f.write("@<TRIPOS>ATOM\n")
-        for i, atom_idx in enumerate(qm_atoms):
-            # Use MDTraj topology for atom information
+
+    # Create a mapping of atom names to charges
+    charge_map = {}
+    for i, atom_idx in enumerate(qm_atoms):
+        if i < len(charges):
             atom = top.atom(atom_idx)
-            if i < len(charges):
-                # But use system for coordinates
-                coords = system.coords[atom_idx]
-                element = atom.element.symbol
-                f.write(f"{i+1:5d} {atom.name:4s} {coords[0]:9.4f} {coords[1]:9.4f} "
-                       f"{coords[2]:9.4f} {element:4s} 1 {resname} {charges[i]:9.6f}\n")
-    
-    print(f"RESP charges saved to {amber_file}")
+            charge_map[atom.name] = charges[i]
+
+    # Print debug info
+    print(f"Generated charge map with {len(charge_map)} entries:")
+    for atom_name, charge in charge_map.items():
+        print(f"  {atom_name}: {charge:.6f}")
+
+    # Update prepi file if provided
+    if args.prepi:
+        substrate_name = top.atom(qm_atoms[0]).residue.name
+        output_prepi = os.path.join(output_dir, f"{substrate_name}_resp.prepi")
+        update_prepi_charges(args.prepi, charge_map, output_prepi)
+
+    print(f"RESP charges saved to {output_prepi}")
 
 
 if __name__ == "__main__":
