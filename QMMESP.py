@@ -100,11 +100,12 @@ def main():
     print(f"QM/MM Energy: {result.energy} Hartree")
     
     # Extract RESP charges
-    extract_resp_charges("./", args.output, qm_atoms, system, args)
+    extract_resp_charges("./", args.output, qm_atoms, system, args, top)
     
+    # We need to use the correct way to access atom information in ASH
     print("QM/MM RESP calculation completed successfully!")
 
-def extract_resp_charges(orca_dir, output_dir, qm_atoms, system, args):
+def extract_resp_charges(orca_dir, output_dir, qm_atoms, system, args, top):
     """Extract RESP charges from ORCA calculation"""
     print("Extracting RESP charges...")
     
@@ -135,7 +136,6 @@ q    ! Quit
         f.write(multiwfn_input)
     
     multiwfn_log = os.path.join(output_dir, "multiwfn.log")
-    print(f"{args.multiwfnpath}/Multiwfn_noGUI {molden_file} < {multiwfn_input_file} > {multiwfn_log}")
     try:
         subprocess.run(
             f"{args.multiwfnpath}/Multiwfn_noGUI {molden_file} < {multiwfn_input_file} > {multiwfn_log}",
@@ -147,51 +147,28 @@ q    ! Quit
         return
     
     # Parse and save RESP charges
-    resp_charges = parse_multiwfn_resp(multiwfn_log)
-    save_charges(resp_charges, qm_atoms, system, output_dir)
+    resp_charges = parse_multiwfn_resp("esp.chg")
+    save_charges(resp_charges, qm_atoms, system, output_dir, top)
 
-def parse_multiwfn_resp(multiwfn_log):
+def parse_multiwfn_resp(multiwfn_chg):
     """Parse RESP charges from Multiwfn output"""
     resp_charges = []
-    resp_section = False
     
-    with open(multiwfn_log, 'r') as f:
+    with open(multiwfn_chg, 'r') as f:
         for line in f:
-            if "RESP charges:" in line:
-                resp_section = True
-                next(f, None)  # Skip header
-                continue
-            
-            if resp_section and "Sum" in line:
-                resp_section = False
-                continue
-                
-            if resp_section and len(line.strip()) > 0:
-                parts = line.split()
-                if len(parts) >= 3:
-                    try:
-                        resp_charge = float(parts[2])
-                        resp_charges.append(resp_charge)
-                    except (ValueError, IndexError):
-                        continue
+            try:
+                resp_charges.append(float(line.split()[-1]))
+            except:
+                print(f"No charges found in {multiwfn_chg}")
     
     return resp_charges
 
-def save_charges(charges, qm_atoms, system, output_dir):
+def save_charges(charges, qm_atoms, system, output_dir, top):
     """Save charges to output files"""
-    # Plain text format
-    resp_file = os.path.join(output_dir, "substrate_resp_charges.txt")
-    with open(resp_file, "w") as f:
-        f.write("# RESP charges for substrate atoms\n")
-        f.write("# AtomIndex AtomName ResID RESPCharge\n")
-        for i, atom_idx in enumerate(qm_atoms):
-            atom = system.atoms[atom_idx]
-            if i < len(charges):
-                f.write(f"{atom_idx+1:5d} {atom.name:4s} {atom.resid:4d} {charges[i]:10.6f}\n")
     
-    # AMBER mol2 format
-    resname = system.atoms[qm_atoms[0]].resname
-    amber_file = os.path.join(output_dir, "substrate_resp.mol2")
+    # mol2 format
+    resname = top.atom(qm_atoms[0]).residue.name
+    amber_file = os.path.join(output_dir, f"{resname}_resp.mol2")
     with open(amber_file, "w") as f:
         f.write("@<TRIPOS>MOLECULE\n")
         f.write(f"{resname}\n")
@@ -201,13 +178,17 @@ def save_charges(charges, qm_atoms, system, output_dir):
         
         f.write("@<TRIPOS>ATOM\n")
         for i, atom_idx in enumerate(qm_atoms):
-            atom = system.atoms[atom_idx]
+            # Use MDTraj topology for atom information
+            atom = top.atom(atom_idx)
             if i < len(charges):
+                # But use system for coordinates
                 coords = system.coords[atom_idx]
+                element = atom.element.symbol
                 f.write(f"{i+1:5d} {atom.name:4s} {coords[0]:9.4f} {coords[1]:9.4f} "
-                       f"{coords[2]:9.4f} {atom.element:4s} 1 {resname} {charges[i]:9.6f}\n")
+                       f"{coords[2]:9.4f} {element:4s} 1 {resname} {charges[i]:9.6f}\n")
     
-    print(f"RESP charges saved to {resp_file} and {amber_file}")
+    print(f"RESP charges saved to {amber_file}")
+
 
 if __name__ == "__main__":
     main()
