@@ -69,7 +69,7 @@ See [Dependencies](#dependencies) section for detailed installation instructions
 ### Python Packages
 
 ```
-pip install numpy mdtraj pyscf ash-md
+pip install numpy mdtraj
 ```
 
 ### Environment Variables
