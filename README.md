@@ -66,12 +66,6 @@ See [Dependencies](#dependencies) section for detailed installation instructions
 | **Multiwfn** | RESP fitting | Download from [Multiwfn website](http://sobereva.com/multiwfn/) |
 | **OpenMM** | MM calculations | `conda install -c conda-forge openmm` |
 
-### Python Packages
-
-```
-pip install numpy mdtraj
-```
-
 ### Environment Variables
 
 ```
