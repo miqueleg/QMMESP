@@ -12,7 +12,6 @@ A Python script for computing environment-aware RESP charges of ligands using QM
 - [Input Files](#input-files)
 - [Output Files](#output-files)
 - [Examples](#examples)
-- [Troubleshooting](#troubleshooting)
 - [Citation](#citation)
 - [License](#license)
 
@@ -28,11 +27,8 @@ QMMESP calculates RESP (Restrained Electrostatic Potential) charges for ligands 
 ## Features
 
 - ✅ **Dual QM Engine Support**: PySCF (default) or ORCA
-- ✅ **Automatic Multiwfn Detection**: Works with both GUI and no-GUI versions
 - ✅ **Environment-aware Charges**: QM/MM approach includes protein effects
-- ✅ **Checkpoint Recovery**: Efficient conversion from QM checkpoints to ESP grids
 - ✅ **AMBER Integration**: Direct prepi file updates for MD simulations
-- ✅ **Robust Error Handling**: Multiple fallback options ensure calculation completion
 
 ## Installation
 
@@ -47,7 +43,7 @@ cd QMMESP
 
 ```
 #Create conda environment
-conda create -n qmmesp python=3.9
+conda create -n qmmesp python=3.13
 conda activate qmmesp
 
 #Install required packages
@@ -64,8 +60,8 @@ See [Dependencies](#dependencies) section for detailed installation instructions
 
 | Software | Purpose | Installation |
 |----------|---------|-------------|
-| **ASH** | QM/MM calculations | `pip install ash-md` |
-| **PySCF** | QM engine (default) | `pip install pyscf` |
+| **ASH** | QM/MM calculations | `python -m pip install git+https://github.com/RagnarB83/ash.git` |
+| **PySCF** | QM engine (default) | `pip install --prefer-binary pyscf` |
 | **ORCA** | QM engine (optional) | Download from [ORCA website](https://orcaforum.kofo.mpg.de) |
 | **Multiwfn** | RESP fitting | Download from [Multiwfn website](http://sobereva.com/multiwfn/) |
 | **OpenMM** | MM calculations | `conda install -c conda-forge openmm` |
@@ -234,10 +230,8 @@ python QMMESP.py
 
 | Purpose | Functional | Basis Set | Notes |
 |---------|------------|-----------|--------|
-| **RESP1** | HF | 6-31G* | Traditional RESP charges |
-| **RESP2** | PW6B95 | aug-cc-pVDZ | Modern improved method |
-| **Fast screening** | B3LYP | 6-31G* | Good compromise |
-| **High accuracy** | PW6B95 | aug-cc-pV(T+d)Z | Research quality |
+| **RESP1-like** | HF | 6-31G* | Traditional RESP charges |
+| **RESP2-like** | PW6B95 | aug-cc-pVDZ | Modern improved method |
 
 ## Citation
 
