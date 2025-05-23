@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Environment-aware RESP charge derivation for substrates using ASH QM/MM
-with ORCA quantum calculations and electrostatic embedding
+with ORCA or PySCF quantum calculations and electrostatic embedding
 """
 
 import os
@@ -10,13 +10,16 @@ import subprocess
 import ash
 from ash import Fragment
 from ash import ORCATheory
+from ash import PySCFTheory
 from ash import QMMMTheory
 from ash import OpenMMTheory
 import mdtraj as md
+import numpy as np
+import shutil
 
 def main():
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="QM/MM RESP charge derivation with ORCA")
+    parser = argparse.ArgumentParser(description="QM/MM RESP charge derivation with ORCA or PySCF")
     parser.add_argument("--pdb", required=True, help="Input PDB file")
     parser.add_argument("--prmtop", required=True, help="Input prmtop file")
     parser.add_argument("--inpcrd", required=True, help="Input inpcrd file")
@@ -29,24 +32,32 @@ def main():
                       help="QM region multiplicity")
     parser.add_argument("--basis", default="6-31G*", 
                       help="Basis set (default: 6-31G*)")
-    parser.add_argument("--functional", default="B3LYP", 
-                      help="DFT functional (default: B3LYP)")
+    parser.add_argument("--functional", default="HF", 
+                      help="DFT functional (default: HF)")
     parser.add_argument("--output", default="qmmm_resp", 
                       help="Output directory")
-    parser.add_argument("--numcores", default=8,
+    parser.add_argument("--numcores", default=8, type=int,
                       help="Number of CPU cores assigned to the QM calculation")
+    parser.add_argument("--qm_engine", choices=["orca", "pyscf"], default="pyscf",
+                      help="QM engine to use: orca or pyscf (default: pyscf)")
     parser.add_argument("--orcadir", default=None,
                       help="Specify Orca installation directory")
     parser.add_argument('--multiwfnpath', type=str,
                     default=os.getenv('Multiwfnpath'),
                     help='Path to software (defaults to $Multiwfnpath)')
+    parser.add_argument("--Noautostart", action="store_true",
+                      help="Add Noautostart to ORCA input to prevent using previous GBW files")
 
     args = parser.parse_args()
 
     if args.multiwfnpath is None:
-        parser.error("No path provided via --path or $Multiwfnpath environment variable.")
-
-
+        parser.error("No path provided via --multiwfnpath or $Multiwfnpath environment variable.")
+    
+    # Convert prepi path to absolute path before any directory changes
+    if args.prepi:
+        args.prepi = os.path.abspath(args.prepi)
+        print(f"Using absolute path for prepi file: {args.prepi}")
+        
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
     
@@ -62,12 +73,13 @@ def main():
         raise ValueError(f"No atoms found for residue ID {args.resid}")
     print(f"Defined QM region with {len(qm_atoms)} atoms")
     
-    # Setup ORCA QM calculator
-    qm_calc = ORCATheory(
-        orcasimpleinput=f"!{args.functional} {args.basis} keepdens",
-        numcores=args.numcores,
-        orcadir=args.orcadir
-    )
+    # Setup QM calculator based on chosen engine
+    if args.qm_engine == "orca":
+        qm_calc = setup_orca_theory(args)
+        print(f"Using ORCA with {args.functional}/{args.basis}")
+    elif args.qm_engine == "pyscf":
+        qm_calc = setup_pyscf_theory(args)
+        print(f"Using PySCF with {args.functional}/{args.basis}")
     
     # Setup MM calculator
     mm_calc = OpenMMTheory(
@@ -90,7 +102,7 @@ def main():
     )
     
     # Run single-point calculation
-    print("Running QM/MM single-point calculation...")
+    print(f"Running QM/MM single-point calculation with {args.qm_engine.upper()}...")
     result = ash.Singlepoint(
         theory=qmmm,
         fragment=system,
@@ -103,12 +115,75 @@ def main():
     # Extract RESP charges
     extract_resp_charges("./", args.output, qm_atoms, system, args, top)
     
-    # We need to use the correct way to access atom information in ASH
-    print("QM/MM RESP calculation completed successfully!")
+    print(f"QM/MM RESP calculation with {args.qm_engine.upper()} completed successfully!")
+
+def setup_orca_theory(args):
+    """Setup ORCA QM theory object"""
+    orca_input = f"!{args.functional} {args.basis} keepdens"
+    
+    # Add Noautostart if requested
+    if args.Noautostart:
+        orca_input += " Noautostart"
+    
+    return ORCATheory(
+        orcasimpleinput=orca_input,
+        numcores=args.numcores,
+        orcadir=args.orcadir
+    )
+
+def setup_pyscf_theory(args):
+    """Setup PySCF QM theory object"""
+    return PySCFTheory(
+        scf_type='RHF',
+        functional=args.functional,
+        basis=args.basis,
+        numcores=args.numcores,
+        write_chkfile_name='pyscf.chk'  # Ensure checkpoint file is saved
+    )
+
+def find_multiwfn_executable(multiwfnpath):
+    """Find the appropriate Multiwfn executable (noGUI preferred, then GUI version)"""
+    # Check for Multiwfn_noGUI first (preferred for automated scripts)
+    nogui_path = os.path.join(multiwfnpath, "Multiwfn_noGUI")
+    if os.path.exists(nogui_path) and os.access(nogui_path, os.X_OK):
+        print("Using Multiwfn_noGUI executable")
+        return nogui_path
+    
+    # Check for regular Multiwfn
+    gui_path = os.path.join(multiwfnpath, "Multiwfn")
+    if os.path.exists(gui_path) and os.access(gui_path, os.X_OK):
+        print("Using Multiwfn executable (with GUI)")
+        return gui_path
+    
+    # Check if they're in the system PATH
+    try:
+        subprocess.run(["Multiwfn_noGUI", "--help"], capture_output=True, check=True)
+        print("Using Multiwfn_noGUI from system PATH")
+        return "Multiwfn_noGUI"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    
+    try:
+        subprocess.run(["Multiwfn", "--help"], capture_output=True, check=True)
+        print("Using Multiwfn from system PATH")
+        return "Multiwfn"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    
+    raise FileNotFoundError(f"No Multiwfn executable found in {multiwfnpath} or system PATH")
 
 def extract_resp_charges(orca_dir, output_dir, qm_atoms, system, args, top):
-    """Extract RESP charges from ORCA calculation"""
+    """Extract RESP charges from QM calculation output"""
     print("Extracting RESP charges...")
+    
+    if args.qm_engine == "orca":
+        extract_resp_charges_orca(orca_dir, output_dir, qm_atoms, system, args, top)
+    elif args.qm_engine == "pyscf":
+        extract_resp_charges_pyscf(orca_dir, output_dir, qm_atoms, system, args, top)
+
+def extract_resp_charges_orca(orca_dir, output_dir, qm_atoms, system, args, top):
+    """Extract RESP charges from ORCA calculation"""
+    print("Extracting RESP charges from ORCA output...")
     
     # Generate Molden file from ORCA output
     orca_basename = os.path.join(orca_dir, "orca")
@@ -123,7 +198,115 @@ def extract_resp_charges(orca_dir, output_dir, qm_atoms, system, args, top):
         return
     
     # Run Multiwfn for RESP fitting
-    multiwfn_input = """7    ! Population analysis
+    run_multiwfn_resp(molden_file, output_dir, args, qm_atoms, system, top)
+
+def extract_resp_charges_pyscf(pyscf_dir, output_dir, qm_atoms, system, args, top):
+    """Extract RESP charges from PySCF calculation using checkpoint file - Method 2"""
+    print("Extracting RESP charges from PySCF checkpoint...")
+    
+    # Look for PySCF checkpoint file
+    checkpoint_file = os.path.join(pyscf_dir, "pyscf.chk")
+    
+    if not os.path.exists(checkpoint_file):
+        print(f"PySCF checkpoint file not found at {checkpoint_file}")
+        # Fall back to Mulliken charges directly
+        calculate_esp_directly_pyscf_inline(pyscf_dir, output_dir, qm_atoms, system, args, top)
+        return
+    
+    try:
+        # Import PySCF tools directly
+        from pyscf.tools import chkfile_util, molden
+        from pyscf.lib import chkfile
+        
+        molden_file = os.path.join(output_dir, "esp.molden")
+        
+        try:
+            print("Trying molden.from_chkfile...")
+            molden.from_chkfile(molden_file, checkpoint_file, key="scf/mo_coeff")
+            print("Successfully converted checkpoint to molden using from_chkfile")
+        except Exception as e2:
+            print(f"molden.from_chkfile failed: {e2}")
+            raise Exception("Both molden conversion methods failed")
+        
+        if os.path.exists(molden_file) and os.path.getsize(molden_file) > 0:
+            print(f"Successfully created molden file: {molden_file}")
+            # Run Multiwfn for RESP fitting
+            run_multiwfn_resp(molden_file, output_dir, args, qm_atoms, system, top)
+        else:
+            raise Exception("Molden file was not created or is empty")
+            
+    except Exception as e:
+        print(f"Error in PySCF checkpoint conversion: {e}")
+        # Fall back to Mulliken charges
+        calculate_esp_directly_pyscf_inline(pyscf_dir, output_dir, qm_atoms, system, args, top)
+
+def calculate_esp_directly_pyscf_inline(pyscf_dir, output_dir, qm_atoms, system, args, top):
+    """Calculate Mulliken charges directly without creating script files"""
+    print("Attempting direct Mulliken charge extraction from PySCF checkpoint...")
+    
+    checkpoint_file = os.path.join(pyscf_dir, "pyscf.chk")
+    
+    try:
+        # Import PySCF modules directly
+        from pyscf import gto, scf
+        from pyscf.lib import chkfile
+        import numpy as np
+        
+        # Load molecular data from checkpoint
+        mol_dict = chkfile.load(checkpoint_file, 'mol')
+        scf_dict = chkfile.load(checkpoint_file, 'scf')
+        
+        # Reconstruct molecule object
+        mol = gto.Mole()
+        mol.build(
+            atom=mol_dict['atom'],
+            basis=mol_dict['basis'],
+            charge=mol_dict.get('charge', 0),
+            spin=mol_dict.get('spin', 0)
+        )
+        
+        # Reconstruct SCF object
+        mf = scf.RHF(mol)
+        mf.mo_coeff = scf_dict['mo_coeff']
+        mf.mo_energy = scf_dict['mo_energy']
+        mf.mo_occ = scf_dict['mo_occ']
+        
+        # Calculate Mulliken charges
+        mulliken_charges = mf.mulliken_charges()
+        
+        # Convert to list for compatibility
+        resp_charges = mulliken_charges.tolist()
+        
+        print("Warning: Using Mulliken charges as fallback for RESP charges")
+        print(f"Extracted {len(resp_charges)} Mulliken charges")
+        
+        # Save charges directly
+        save_charges(resp_charges, qm_atoms, system, output_dir, top, args)
+        
+    except Exception as e:
+        print(f"Error in direct charge extraction: {e}")
+        print("Could not extract any charges from PySCF calculation")
+
+def run_multiwfn_resp(molden_file, output_dir, args, qm_atoms, system, top):
+    """Run Multiwfn for RESP fitting with automatic executable detection"""
+    # Use absolute paths to avoid nested directory issues
+    abs_output_dir = os.path.abspath(output_dir)
+    abs_molden_file = os.path.abspath(molden_file)
+    
+    # Find the appropriate Multiwfn executable
+    try:
+        multiwfn_exe = find_multiwfn_executable(args.multiwfnpath)
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        return
+    
+    # Change to output directory for Multiwfn
+    original_dir = os.getcwd()
+    os.chdir(abs_output_dir)
+    
+    try:
+        # Run Multiwfn for RESP fitting
+        multiwfn_input = """7    ! Population analysis
 18   ! RESP fitting
 1    ! Start the fitting
 y    ! Yes, continue
@@ -131,38 +314,43 @@ y    ! Yes, continue
 0    ! Return
 q    ! Quit
 """
-    
-    multiwfn_input_file = os.path.join(output_dir, "multiwfn_input.txt")
-    with open(multiwfn_input_file, "w") as f:
-        f.write(multiwfn_input)
-    
-    multiwfn_log = os.path.join(output_dir, "multiwfn.log")
-    try:
-        subprocess.run(
-            f"{args.multiwfnpath}/Multiwfn_noGUI {molden_file} < {multiwfn_input_file} > {multiwfn_log}",
-            shell=True, check=True
-        )
+        
+        multiwfn_input_file = "multiwfn_input.txt"
+        with open(multiwfn_input_file, "w") as f:
+            f.write(multiwfn_input)
+        
+        multiwfn_log = "multiwfn.log"
+        
+        # Use the detected executable
+        cmd = f"{multiwfn_exe} {os.path.basename(abs_molden_file)} < {multiwfn_input_file} > {multiwfn_log}"
+        subprocess.run(cmd, shell=True, check=True)
+        
+        # Parse and save RESP charges
+        resp_charges = parse_multiwfn_resp("esp.chg")
+        save_charges(resp_charges, qm_atoms, system, abs_output_dir, top, args)
+        
     except subprocess.CalledProcessError as e:
         print("Warning: Multiwfn calculation failed")
         print(e)
-        return
-    
-    # Parse and save RESP charges
-    resp_charges = parse_multiwfn_resp("esp.chg")
-    save_charges(resp_charges, qm_atoms, system, output_dir, top, args)
+    finally:
+        os.chdir(original_dir)
 
 def parse_multiwfn_resp(multiwfn_chg):
     """Parse RESP charges from Multiwfn output"""
     resp_charges = []
     
-    with open(multiwfn_chg, 'r') as f:
-        for line in f:
-            try:
-                resp_charges.append(float(line.split()[-1]))
-            except:
-                print(f"No charges found in {multiwfn_chg}")
+    try:
+        with open(multiwfn_chg, 'r') as f:
+            for line in f:
+                try:
+                    resp_charges.append(float(line.split()[-1]))
+                except (ValueError, IndexError):
+                    continue
+    except FileNotFoundError:
+        print(f"No charges found in {multiwfn_chg}")
     
     return resp_charges
+
 def update_prepi_charges(original_prepi_path, charge_data, output_prepi_path):
     """
     Update charges in an AMBER prepi file.
@@ -232,10 +420,12 @@ def update_prepi_charges(original_prepi_path, charge_data, output_prepi_path):
     
     print(f"Updated prepi file created at {output_prepi_path}")
 
-
 def save_charges(charges, qm_atoms, system, output_dir, top, args):
     """Save charges to output files"""
-
+    
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
     # Create a mapping of atom names to charges
     charge_map = {}
     for i, atom_idx in enumerate(qm_atoms):
@@ -248,14 +438,22 @@ def save_charges(charges, qm_atoms, system, output_dir, top, args):
     for atom_name, charge in charge_map.items():
         print(f"  {atom_name}: {charge:.6f}")
 
+    # Save charges to text file
+    charge_file = os.path.join(output_dir, f"substrate_{args.qm_engine}_charges.txt")
+    with open(charge_file, 'w') as f:
+        f.write(f"# RESP charges calculated with {args.qm_engine.upper()}\n")
+        f.write(f"# Functional: {args.functional}, Basis: {args.basis}\n")
+        for atom_name, charge in charge_map.items():
+            f.write(f"{atom_name:>6s} {charge:10.6f}\n")
+
     # Update prepi file if provided
     if args.prepi:
         substrate_name = top.atom(qm_atoms[0]).residue.name
-        output_prepi = os.path.join(output_dir, f"{substrate_name}_resp.prepi")
+        output_prepi = os.path.join(output_dir, f"{substrate_name}_{args.qm_engine}.prepi")
         update_prepi_charges(args.prepi, charge_map, output_prepi)
+        print(f"RESP charges saved to {output_prepi}")
 
-    print(f"RESP charges saved to {output_prepi}")
-
+    print(f"RESP charges saved to {charge_file}")
 
 if __name__ == "__main__":
     main()
