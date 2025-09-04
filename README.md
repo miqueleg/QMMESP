@@ -258,10 +258,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 For questions, issues, or suggestions:
 
 1. **GitHub Issues**: [Create an issue](https://github.com/miqueleg/QMMESP/issues)
-2. **Email**: [Your email if you want to provide it]
-3. **ORCA Forum**: For ORCA-specific questions
-4. **PySCF Community**: For PySCF-related issues
-5. **ASH GitHub**: For ASH-related issues
+2. **ORCA Forum**: For ORCA-specific questions
+3. **PySCF Community**: For PySCF-related issues
+4. **ASH GitHub**: For ASH-related issues
 
 ---
 
